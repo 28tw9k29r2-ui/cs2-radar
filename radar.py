@@ -306,7 +306,13 @@ def check_prices(cfg, db, notifier, fetch=fetch_steam_price, delay=3.5):
             continue
         if price is None:
             log.info("no price for %s", name)
+            misses = int(meta_get(db, "miss:" + name, "0")) + 1
+            meta_set(db, "miss:" + name, misses)
+            if misses == 3:
+                notifier.send(f"miss:{name}", f"❓ Не знаходжу ціну для «{name}» (3 проходи поспіль).\n"
+                              "Перевірте точну назву зі Steam Market або приберіть: /remove <назва>")
             continue
+        meta_set(db, "miss:" + name, 0)
         db.execute("INSERT INTO prices VALUES(?,?,?,?)", (name, now_ts(), price, vol))
         db.commit()
         for key, text in evaluate_price(db, name, cfg["alerts"]) + indicator_signals(db, name, cfg["indicators"]):
@@ -666,7 +672,12 @@ def handle_command(db, cfg, text, fetch=fetch_steam_price):
         try:
             price, vol = fetch(rest, cfg["currency"])
         except Exception as e:
-            return f"Не вдалося перевірити ціну зараз ({e}). Спробуйте пізніше."
+            # Steam часто віддає 429 для спільних IP (GitHub Actions): додаємо без перевірки,
+            # ціну бот підтягне при наступному проході, а про хибну назву попередить сам.
+            db.execute("INSERT OR IGNORE INTO watch VALUES(?,?)", (rest, now_ts()))
+            db.commit()
+            return (f"⚠️ Steam зараз не віддає ціну ({e}). Додав без перевірки: {rest}\n"
+                    "Ціну підтягну при наступному проході; якщо назва хибна, повідомлю.")
         if price is None:
             return "Не знайшов на Steam Market. Назва має бути точною (market_hash_name)."
         db.execute("INSERT OR IGNORE INTO watch VALUES(?,?)", (rest, now_ts()))
@@ -890,6 +901,17 @@ def selftest():
     fake = lambda name, cur: (12.0, 100) if "Redline" in name else (None, None)
     assert "Стежу" in handle_command(db, cfg, "/add AK-47 | Redline (Field-Tested)", fake)
     assert "Не знайшов" in handle_command(db, cfg, "/add Nonexistent Thing", fake)
+    def limited(name, cur):
+        raise RuntimeError("Steam rate limit (429)")
+    assert "без перевірки" in handle_command(db, cfg, "/add ★ StatTrak™ Nomad Knife | Damascus Steel (Field-Tested)", limited)
+    assert "★ StatTrak™ Nomad Knife | Damascus Steel (Field-Tested)" in watch_names(db)
+    # хибна назва: після 3 промахів приходить попередження
+    db.execute("INSERT OR IGNORE INTO watch VALUES(?,?)", ("Wrong Name", t))
+    before = len(n.sent)
+    for _ in range(3):
+        check_prices(cfg, db, n, fetch=lambda name, cur: (None, None) if name == "Wrong Name" else (None, None), delay=0)
+    assert any("Wrong Name" in s and "❓" in s for s in n.sent[before:])
+    db.execute("DELETE FROM watch WHERE name IN (?, ?)", ("Wrong Name", "★ StatTrak™ Nomad Knife | Damascus Steel (Field-Tested)"))
     assert "Redline" in handle_command(db, cfg, "/list", fake)
     assert "🎯" in handle_command(db, cfg, "/target AK-47 | Redline (Field-Tested) < 13", fake)
     assert "📌" in handle_command(db, cfg, "/buy AK-47 | Redline (Field-Tested) @ 8 x2 sl10 tp30", fake)
