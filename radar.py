@@ -25,6 +25,7 @@ import sqlite3
 import sys
 import time
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 import requests
 import yaml
@@ -92,6 +93,12 @@ def strip_tags(s: str) -> str:
     return htmllib.unescape(re.sub(r"<[^>]+>", " ", s or "")).strip()
 
 
+def too_old(post: dict, max_age_hours: float) -> bool:
+    """Старі пости/новини (за датою публікації) не надсилаємо."""
+    ts = post.get("ts")
+    return bool(ts) and now_ts() - ts > max_age_hours * 3600
+
+
 # --------------------------------------------------------------------------- storage
 def init_db(path: str) -> sqlite3.Connection:
     db = sqlite3.connect(path)
@@ -156,6 +163,7 @@ class Notifier:
         self.token = os.getenv("TELEGRAM_TOKEN")
         self.chat = os.getenv("TELEGRAM_CHAT_ID")
         self.sent = []  # для selftest
+        self.silent = False  # перший прохід: лише запам'ятовуємо старі пости/новини, нічого не шлемо
 
     def _post(self, text: str):
         self.sent.append(text)
@@ -173,6 +181,8 @@ class Notifier:
 
     def send(self, key: str, text: str):
         """Не шле той самий ключ частіше ніж раз на cooldown."""
+        if self.silent:
+            return
         cutoff = now_ts() - self.cooldown
         if self.db.execute("SELECT 1 FROM alerts WHERE key=? AND ts>?", (key, cutoff)).fetchone():
             return
@@ -447,12 +457,18 @@ def fetch_rss(url: str):
     r.raise_for_status()
     root = ET.fromstring(r.content)
     for it in root.iter("item"):
+        ts = None
+        try:
+            ts = parsedate_to_datetime(it.findtext("pubDate")).timestamp()
+        except (TypeError, ValueError):
+            pass
         yield {
             "id": "rss:" + (it.findtext("guid") or it.findtext("link") or ""),
             "title": it.findtext("title") or "",
             "text": strip_tags(it.findtext("description") or ""),
             "url": it.findtext("link") or "",
             "score": 0,
+            "ts": ts,
         }
 
 
@@ -472,6 +488,7 @@ def fetch_reddit(sub: str, limit=50):
             "text": d.get("selftext", ""),
             "url": "https://reddit.com" + d.get("permalink", ""),
             "score": d.get("score", 0),
+            "ts": d.get("created_utc"),
         }
 
 
@@ -590,6 +607,8 @@ def process_events(cfg, db, notifier, posts):
     for p in posts:
         if not p["id"].startswith("rss:"):
             continue  # події беремо лише з офіційних джерел; обговорення йдуть у process_posts
+        if too_old(p, cfg.get("max_post_age_hours", 72)):
+            continue
         hits = event_hits(p, cfg["event_keywords"])
         if hits and is_new(db, "event:" + p["id"]):
             notifier.send("event:" + p["id"], f"🗞 Подія CS2: {p['title']}\nКлючові слова: {', '.join(hits)}\n{p['url']}")
@@ -598,7 +617,7 @@ def process_events(cfg, db, notifier, posts):
 def process_posts(cfg, db, notifier, posts):
     use_llm = cfg.get("llm", {}).get("enabled") and os.getenv("ANTHROPIC_API_KEY")
     for p in posts:
-        if p["id"].startswith("rss:"):
+        if p["id"].startswith("rss:") or too_old(p, cfg.get("max_post_age_hours", 72)):
             continue
         stickers = sorted({s.strip() for s in STICKER_RE.findall(p["title"] + "\n" + p["text"])})
         for s in stickers:
@@ -734,12 +753,24 @@ def poll_commands(cfg, db, notifier, fetch=fetch_steam_price):
 
 
 # --------------------------------------------------------------------------- main
+def process_news(cfg, db, notifier):
+    """Новини й пости. Перший запуск мовчки запам'ятовує все наявне, щоб не засипати старим."""
+    posts = collect_posts(cfg)
+    first = meta_get(db, "baseline_done") != "1"
+    notifier.silent = first
+    try:
+        process_events(cfg, db, notifier, posts)
+        process_posts(cfg, db, notifier, posts)
+    finally:
+        notifier.silent = False
+    if first and posts:
+        meta_set(db, "baseline_done", "1")
+
+
 def run_once(cfg, db, notifier):
     seed_watch(cfg, db)
     poll_commands(cfg, db, notifier)
-    posts = collect_posts(cfg)
-    process_events(cfg, db, notifier, posts)
-    process_posts(cfg, db, notifier, posts)
+    process_news(cfg, db, notifier)
     check_prices(cfg, db, notifier)
     check_targets_and_positions(cfg, db, notifier)
     scan_movers(cfg, db, notifier)
@@ -754,9 +785,7 @@ def run_loop(cfg, db, notifier):
         try:
             poll_commands(cfg, db, notifier)
             if t - last_news >= cfg["poll_news_minutes"] * 60:
-                posts = collect_posts(cfg)
-                process_events(cfg, db, notifier, posts)
-                process_posts(cfg, db, notifier, posts)
+                process_news(cfg, db, notifier)
                 last_news = t
             if t - last_prices >= cfg["poll_prices_minutes"] * 60:
                 check_prices(cfg, db, notifier)
@@ -837,6 +866,19 @@ def selftest():
     ev_ru = {"id": "rss:2", "title": "Обновление CS2: новый кейс", "text": "", "url": "u", "score": 0}
     process_events(cfg, db, n, [ev, ev_ru])
     assert sum("🗞" in s for s in n.sent) == 2
+
+    # --- старі новини не надсилаються; перший прохід мовчить
+    old_ev = {"id": "rss:old", "title": "Update from a month ago", "text": "", "url": "u", "score": 0, "ts": t - 30 * 86400}
+    fresh_ev = {"id": "rss:fresh", "title": "Update today", "text": "", "url": "u", "score": 0, "ts": t - 3600}
+    before = len(n.sent)
+    process_events(cfg, db, n, [old_ev, fresh_ev])
+    assert [s for s in n.sent[before:] if "month ago" in s] == [] and any("Update today" in s for s in n.sent[before:])
+    db2 = init_db(":memory:")
+    n2 = Notifier(db2)
+    n2.token = n2.chat = None
+    n2.silent = True
+    process_events(cfg, db2, n2, [{"id": "rss:z", "title": "Update", "text": "", "url": "u", "score": 0}])
+    assert n2.sent == [] and not is_new(db2, "event:rss:z")  # запам'ятали, але не надіслали
 
     # --- Telegram-канал: парсер
     page = ('<div class="tgme_widget_message_wrap" data-post="chan/12"><div class="tgme_widget_message_text js-message_text">'
