@@ -1,0 +1,147 @@
+# CS2 Radar v2 — конфіг
+
+currency: 3              # Steam currency id: 1=USD, 3=EUR
+skinport_currency: EUR   # має відповідати currency
+steam_fee: 1.15          # покупець платить ціну, продавець отримує ~ціна/1.15
+
+poll_prices_minutes: 30  # лише для режиму `run` (в Actions розклад задає workflow)
+poll_news_minutes: 20
+
+# --- алерти по змінах ціни/обсягу для предметів зі списку відстеження
+alerts:
+  price_change_pct: 5
+  window_hours: 24
+  volume_spike_x: 3
+
+# --- біржові індикатори (по історії цін зі списку відстеження)
+indicators:
+  min_points: 12         # мін. кількість знімків ціни до початку аналізу
+  sma_short: 6
+  sma_long: 24
+  rsi_period: 14
+  rsi_overbought: 75
+  rsi_oversold: 25
+  z_window: 24
+  z_threshold: 2.5
+  z_min_move_pct: 3      # ігноруємо z-сплески менші за N%
+
+# --- сканер ринку: топ популярних предметів Steam, пошук pump/dump без watchlist
+movers:
+  enabled: true
+  pages: 2               # по 100 предметів на сторінку
+  window_hours: 24
+  min_price: 1.0
+  min_listings: 20
+  pump_pct: 12
+  dump_pct: 12
+  squeeze_pct: 25        # лістинги впали на N% і ціна росте -> хтось скуповує пропозицію
+  max_alerts: 5          # макс. алертів кожного типу за прохід
+
+# --- спред Steam vs Skinport (чи є різниця між "ринком із комісією" та реальним ринком)
+spread:
+  enabled: true
+  min_price: 2.0
+  min_roi_pct: 12        # купити на Skinport, продати в Steam (у гаманець Steam, не в кеш!)
+  premium_ratio: 0.97    # Skinport майже дорівнює Steam -> реальний попит тисне ціну вгору
+
+# --- початковий список відстеження (далі керуйте з Telegram: /add /remove)
+watchlist:
+  cases:
+    - "Revolution Case"
+    - "Dreams & Nightmares Case"
+  skins:
+    - "AK-47 | Redline (Field-Tested)"
+    - "AWP | Asiimov (Field-Tested)"
+  stickers:
+    - "Sticker | Titan (Holo) | Katowice 2014"
+
+# --- джерела новин і обговорень
+sources:
+  rss:
+    - "https://store.steampowered.com/feeds/news/app/730/"
+  reddit_subs:
+    - "csgomarketforum"
+    - "GlobalOffensiveTrade"
+    - "GlobalOffensive"
+  # Публічні Telegram-канали (читаються через t.me/s/<назва>). Додайте RU-канали про CS2-трейд/крафти:
+  telegram_channels: []
+  # X/Twitter: потрібен платний API-токен у змінній TWITTER_BEARER_TOKEN, інакше джерело пропускається
+  x_queries:
+    - "(cs2 OR csgo) (craft OR sticker) -is:retweet"
+    - "(cs2 OR кс2) (памп OR dump OR крафт) -is:retweet"
+
+# --- події (патчі, правила торгівлі, нові кейси) — EN + RU
+event_keywords:
+  - "update"
+  - "trade ban"
+  - "trade hold"
+  - "operation"
+  - "new case"
+  - "case removed"
+  - "collection"
+  - "major"
+  - "sticker capsule"
+  - "market"
+  - "обновлени"
+  - "трейд бан"
+  - "новый кейс"
+  - "операци"
+event_min_reddit_score: 100
+
+# --- контекст крафтів та хештеги
+craft:
+  hashtags: ["#craft", "#stickercraft", "#sticker", "#katowice2014", "#holo", "#gold", "#4xcraft", "#scrape", "#крафт", "#наклейки"]
+  hot_words: ["craft", "4x", "holo", "gold", "katowice", "cologne", "paris", "clean", "scrape", "combo",
+              "крафт", "стикер", "наклейк", "скрафт", "голо", "золот"]
+  trend_min_mentions: 3
+
+# --- категорії сигналів у постах (EN+RU). patterns — регулярні вирази без урахування регістру.
+categories:
+  nsfw_craft:
+    emoji: "🔞"
+    title: "NSFW-крафт"
+    need_craft_context: true
+    min_score: 0
+    patterns: ["\\bnsfw\\b", "нсфв", "\\blewd\\b", "18\\+"]
+  budget_look:
+    emoji: "💸"
+    title: "Бюджетний скін під дорогий вигляд"
+    need_craft_context: true
+    min_score: 0
+    patterns:
+      - "looks? like (a |an )?(howl|dragon lore|fade|doppler|case hardened|gamma)"
+      - "budget (howl|craft|dragon lore)"
+      - "cheap (howl|craft|lore)"
+      - "выгляд\\w+ как"
+      - "бюджетн\\w+ (крафт|хоул|howl)"
+      - "дешев\\w+ крафт"
+      - "(howl|хоул).{0,30}\\$\\s?\\d"
+  wear_upgrade:
+    emoji: "🔧"
+    title: "Апгрейд вигляду (wear) наклейками"
+    need_craft_context: true
+    min_score: 0
+    patterns:
+      - "\\b(bs|battle[- ]scarred|ww|well[- ]worn|ft|field[- ]tested)\\b.{0,25}(->|→|to|into|в|до).{0,15}\\b(fn|factory new|mw|minimal wear)\\b"
+      - "(scrape|scraped|scrapes)"
+      - "fake (fn|mw|factory new|minimal wear)"
+      - "looks? (like )?(fn|factory new|mw|minimal wear)"
+      - "скрейп|скрэйп|скрепк"
+      - "выгляд\\w+ как (fn|mw|фн|мв)"
+      - "(бс|ww|вв|ft|фт).{0,15}(->|→|в|до).{0,10}(fn|mw|фн|мв)"
+  chinese_pump:
+    emoji: "🇨🇳"
+    title: "Китайці/хтось качає ціну"
+    need_craft_context: false
+    min_score: 5
+    patterns: ["chinese", "\\bbuff(163)?\\b", "c5game", "china", "\\bpump(ing|ed|s)?\\b", "китайц", "китай", "памп", "пампят", "качают", "выкупа"]
+  fast_drop:
+    emoji: "🔻"
+    title: "Швидке падіння ціни"
+    need_craft_context: false
+    min_score: 5
+    patterns: ["\\bdump(ing|ed|s)?\\b", "\\bcrash(ing|ed)?\\b", "\\btank(ing|ed|s)?\\b", "price drop", "dropping fast", "падает", "обвал", "слив", "дамп", "рухнул", "упал"]
+
+# --- опційно: Claude робить додаткову оцінку (потрібен ANTHROPIC_API_KEY)
+llm:
+  enabled: false
