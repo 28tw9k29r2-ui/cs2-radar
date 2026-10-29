@@ -1,11 +1,25 @@
 # CS2 Radar v2 — конфіг
 
-currency: 3              # Steam currency id: 1=USD, 3=EUR
-skinport_currency: EUR   # має відповідати currency
+currency: 18             # id валюти Steam: 18 = UAH (гривня). Steam сам віддає ціни в гривнях, без перерахунку за курсом НБУ.
+currency_symbol: "₴"     # що показувати біля сум
+skinport_currency: EUR   # використовується лише якщо spread.enabled: true і збігається з валютою Steam (для UAH спред недоступний)
 steam_fee: 1.15          # покупець платить ціну, продавець отримує ~ціна/1.15
 
-poll_prices_minutes: 30  # лише для режиму `run` (в Actions розклад задає workflow)
+poll_prices_minutes: 30  # як часто збирати ціни (бот сам пропускає запуск, якщо ще рано)
 poll_news_minutes: 20
+max_post_age_hours: 72   # пости й новини старші за це не надсилаються
+
+# --- захист від 429 (ліміт запитів Steam)
+max_price_requests_per_run: 20   # макс. запитів цін за один прохід; решта предметів по колу в наступних проходах
+steam_block_minutes: 30          # пауза після 429; далі 60, 120, до 240 хв, успіх скидає
+
+# --- скільки днів зберігати дані в базі (старе прибирається раз на добу)
+retention_days:
+  prices: 30
+  scan: 7
+  mentions: 14
+  alerts: 14
+  seen: 30
 
 # --- алерти по змінах ціни/обсягу для предметів зі списку відстеження
 alerts:
@@ -30,16 +44,18 @@ movers:
   enabled: true
   pages: 2               # по 100 предметів на сторінку
   window_hours: 24
-  min_price: 1.0
+  every_minutes: 60      # сканер (2 запити до Steam) запускається не частіше за цей інтервал
+  min_price: 40.0        # у гривнях: дрібніші предмети ігноруємо
   min_listings: 20
   pump_pct: 12
   dump_pct: 12
   squeeze_pct: 25        # лістинги впали на N% і ціна росте -> хтось скуповує пропозицію
   max_alerts: 5          # макс. алертів кожного типу за прохід
 
-# --- спред Steam vs Skinport (чи є різниця між "ринком із комісією" та реальним ринком)
+# --- спред Steam vs Skinport. Вимкнено: Skinport не віддає ціни в гривнях, а перерахунок за курсом ми свідомо не використовуємо.
+# Увімкнеться лише якщо поставити currency на валюту, яку підтримують обидва (напр. 3 = EUR), і skinport_currency: EUR.
 spread:
-  enabled: true
+  enabled: false
   min_price: 2.0
   min_roi_pct: 12        # купити на Skinport, продати в Steam (у гаманець Steam, не в кеш!)
   premium_ratio: 0.97    # Skinport майже дорівнює Steam -> реальний попит тисне ціну вгору
@@ -91,8 +107,9 @@ event_min_reddit_score: 100
 # --- контекст крафтів та хештеги
 craft:
   hashtags: ["#craft", "#stickercraft", "#sticker", "#katowice2014", "#holo", "#gold", "#4xcraft", "#scrape", "#крафт", "#наклейки"]
-  hot_words: ["craft", "4x", "holo", "gold", "katowice", "cologne", "paris", "clean", "scrape", "combo",
-              "крафт", "стикер", "наклейк", "скрафт", "голо", "золот"]
+  # слова шукаються цілком ('gold' не збігається з 'golden'); зірочка в кінці дозволяє закінчення ('наклейк*' = наклейки, наклейками)
+  hot_words: ["craft", "crafts", "crafted", "crafting", "4x", "holo", "foil", "scrape*", "katowice", "cologne",
+              "крафт*", "скрафт*", "стикер*", "наклейк*", "голо", "скрейп*"]
   trend_min_mentions: 3
 
 # --- категорії сигналів у постах (EN+RU). patterns — регулярні вирази без урахування регістру.
@@ -134,13 +151,21 @@ categories:
     title: "Китайці/хтось качає ціну"
     need_craft_context: false
     min_score: 5
-    patterns: ["chinese", "\\bbuff(163)?\\b", "c5game", "china", "\\bpump(ing|ed|s)?\\b", "китайц", "китай", "памп", "пампят", "качают", "выкупа"]
+    # Саме "buff163" чи "chinese" без дії більше не спрацьовує: потрібна пара "китайці/Buff + качають/скуповують".
+    patterns:
+      - "\\b(chinese|china|buff(163)?|c5(game)?|igxe|uuyp)\\b.{0,80}\\b(pump\\w*|buy(ing)? up|bought (it )?out|buyout|hoard\\w*)"
+      - "\\b(pump\\w*|buy(ing)? up|bought (it )?out|buyout|hoard\\w*)\\b.{0,80}\\b(chinese|china|buff(163)?|c5(game)?|igxe|uuyp)\\b"
+      - "\\b(pumping|pumped)\\b"
+      - "(китайц\\w*|китай\\w*|баф\\w*|buff).{0,80}(кач\\w+|памп\\w*|скуп\\w+|выкуп\\w*|закуп\\w+)"
+      - "(кач\\w+|памп\\w*|скуп\\w+|выкуп\\w*).{0,80}(китайц\\w*|китай\\w*)"
+      - "\\bпамп\\w*"
   fast_drop:
     emoji: "🔻"
     title: "Швидке падіння ціни"
     need_craft_context: false
     min_score: 5
-    patterns: ["\\bdump(ing|ed|s)?\\b", "\\bcrash(ing|ed)?\\b", "\\btank(ing|ed|s)?\\b", "price drop", "dropping fast", "падает", "обвал", "слив", "дамп", "рухнул", "упал"]
+    patterns: ["\\bdump(ing|ed|s)?\\b", "\\bcrash(ing|ed|es)?\\b", "\\btank(ing|ed|s)?\\b", "\\bplummet\\w*", "price (drop|crash)", "dropp(ing|ed) (fast|hard)",
+               "падает|падают", "обвал\\w*", "\\bслив\\w*", "дамп\\w*", "рухнул\\w*", "упал\\w*"]
 
 # --- опційно: Claude робить додаткову оцінку (потрібен ANTHROPIC_API_KEY)
 llm:

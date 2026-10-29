@@ -1,0 +1,52 @@
+name: cs2-radar
+
+on:
+  schedule:
+    - cron: "7,27,47 * * * *"   # кожні ~20 хвилин, мінути не на початку години (менше навантаження в GitHub)
+  workflow_dispatch: {}         # ручний запуск кнопкою Run workflow
+
+concurrency:
+  group: cs2-radar
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # База історії цін, списку відстеження, позицій тощо зберігається в кеші між запусками
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: radar.db
+          key: radar-state-${{ github.run_id }}
+          restore-keys: radar-state-
+
+      - name: Run radar
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+        run: python radar.py once
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: radar.db
+          key: radar-state-${{ github.run_id }}
